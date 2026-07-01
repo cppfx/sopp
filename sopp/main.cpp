@@ -12,6 +12,7 @@
 #include <sstream>
 #include <boost/assert.hpp>
 #include <fstream>
+#include <mutex>
 
 using std::string_literals::operator""s;
 
@@ -694,6 +695,7 @@ namespace sopp::net
 		asio::awaitable<void> connect(auto && ep_list)
 		{
 			__tcp_stream = std::make_unique<beast::tcp_stream>(co_await asio::this_coro::executor);
+			__tcp_stream->expires_after(std::chrono::seconds(5));
 			auto [ec, ep] = co_await __tcp_stream->async_connect(
 				std::move(ep_list),
 				asio::as_tuple
@@ -718,6 +720,7 @@ namespace sopp::net
 			request.set(http::field::content_type, "application/x-www-form-urlencoded");
 			request.body() = __args->json_string();
 			request.prepare_payload();
+			__tcp_stream->expires_after(std::chrono::seconds(8));
 			auto [ec, bytes] = co_await http::async_write(
 				*__tcp_stream,
 				request,
@@ -735,6 +738,7 @@ namespace sopp::net
 		{
 			http::response<http::string_body> response;
 			beast::flat_buffer buffer;
+			__tcp_stream->expires_after(std::chrono::seconds(15));
 			auto [ec, bytes] = co_await http::async_read(
 				*__tcp_stream,
 				buffer,
@@ -752,6 +756,109 @@ namespace sopp::net
 		}
 	};	// class sopp_client final
 }	// namespace sopp::net
+
+namespace sopp
+{
+	class ostream_base
+	{
+	public:
+		virtual void print(const std::string &) noexcept = 0;
+		virtual operator bool () const noexcept = 0;
+	};
+
+	class ostream final: virtual public ostream_base
+	{
+	private:
+		std::ostream & __out;
+	public:
+		ostream() = delete;
+		ostream(std::ostream & out__) noexcept:
+			__out{out__}
+		{
+		}
+		virtual ~ostream() = default;
+	public:
+		operator bool () const noexcept override
+		{
+			return __out.operator bool ();
+		}
+	public:
+		void print(const std::string & str) noexcept
+		{
+			if (str.empty())
+				return;
+			__out << str << std::flush;
+		}
+	};
+
+	class ofstream final: virtual public ostream_base
+	{
+	private:
+		std::ofstream __file;
+	public:
+		ofstream() = delete;
+		ofstream(const std::string & filename__) noexcept:
+			__file{filename__, std::ios::trunc}
+		{
+		}
+		virtual ~ofstream() = default;
+	public:
+		operator bool () const noexcept override
+		{
+			return __file.operator bool ();
+		}
+	public:
+		void print(const std::string & str) noexcept
+		{
+			if (str.empty())
+				return;
+			if (! __file)
+				return;
+			__file << str << std::flush;
+		}
+	};
+
+	class g_stream:
+		virtual public std::enable_shared_from_this<sopp::g_stream>
+	{
+	private:
+		std::unique_ptr<sopp::ostream_base> __out;
+		static std::mutex __g_stream_mutex;
+	public:
+		g_stream(std::ostream & out__, const std::string & filename__):
+			__out{nullptr}
+		{
+			if (filename__.empty())
+			{
+				__out = std::make_unique<sopp::ostream>(out__);
+			}
+			else
+			{
+				__out = std::make_unique<sopp::ofstream>(filename__);
+			}
+			if (! __out)
+				throw sopp::fatal_error{"Creating sopp::g_stream object failed!"};
+			if (! *__out)
+				throw sopp::fatal_error{"sopp::g_stream underlying output stream failed!"};
+		}
+	public:
+		operator bool () const noexcept
+		{
+			return __out->operator bool ();
+		}
+	public:
+		void print(const std::string & str) const noexcept
+		{
+			BOOST_ASSERT(bool{__out});	// code test
+			BOOST_ASSERT(bool{* __out});	// code test
+			{
+				std::unique_lock<std::mutex> lock{__g_stream_mutex};
+				__out->print(str);
+			}
+		}
+	};
+	std::mutex sopp::g_stream::__g_stream_mutex{};
+}	// namespace sopp
 
 int main(int argc, char ** argv)
 {
@@ -873,6 +980,48 @@ int main(int argc, char ** argv)
 	}
 	// [parse-args] ends.
 
+	std::shared_ptr<sopp::g_stream> gout{nullptr}, glog{nullptr}, gerr{nullptr};
+
+	// [g_stream]
+	try
+	{
+		if (! args->allfile().empty())
+		{
+			gout = std::make_shared<sopp::g_stream>(std::cout, args->allfile());
+			glog = gout;
+			gerr = gout;
+		}
+		else
+		{
+			gout = std::make_shared<sopp::g_stream>(std::cout, args->outfile());
+			glog = std::make_shared<sopp::g_stream>(std::clog, args->logfile());
+			gerr = std::make_shared<sopp::g_stream>(std::cerr, args->errfile());
+		}
+		if (! gout || ! * gout)
+			throw sopp::fatal_error{"gout error"};
+		if (! glog || ! * glog)
+			throw sopp::fatal_error{"glog error"};
+		if (! gerr || ! * gerr)
+			throw sopp::fatal_error{"gerr error"};
+	}
+	catch (sopp::fatal_error & e)
+	{
+		std::cerr << "----------------------------------------------------------------------\n";
+		std::cerr << "----------------------------------------------------------------------\n";
+		std::cerr << "Fatal Error [g_stream] (c++ sopp::fatal_error) :\n"
+			<< e.what()
+			<< std::endl;
+		return 1;
+	}
+	catch (...)
+	{
+		std::cerr << "----------------------------------------------------------------------\n";
+		std::cerr << "----------------------------------------------------------------------\n";
+		std::cerr << "Fatal Error [g_stream] (c++ unknown exception) .\n";
+		return 1;
+	}
+	// [g_stream] ends
+
 	// [net-request]
 	try
 	{
@@ -927,72 +1076,35 @@ int main(int argc, char ** argv)
 	}
 	// [net-request] ends.
 	
-	// todo: from this line to end.
-
-	bool cout_to_file = false;
-	bool cerr_to_file = false;
-	bool clog_to_file = false;
-
-	if (! args->allfile().empty())
+	try
 	{
-		std::ofstream file{args->allfile(), std::ios::trunc};
-		file << "==== std::cerr ====\n";
-		file << out->err().str() << std::endl;
-		file << "==== std::clog ====\n";
-		file << out->log().str() << std::endl;
-		file << "==== std::cout ====\n";
-		file << out->out().str() << std::endl;
-		cout_to_file = true;
-		cerr_to_file = true;
-		clog_to_file = true;
+		// If error stream is not empty, print error only and quit.
+		// Log stream and out stream are ignored.
+		if (! out->err().str().empty())
+		{
+			gerr->print("_||\n"s + out->err().str());
+			return 1;
+		}
+
+		// else (no error)
+
+		// Log will be outputed for these cases.
+		if (args->verbose() || ! args->allfile().empty() || ! args->logfile().empty())
+			glog->print("_|^\n======== std::clog ========\n"s + out->log().str());
+	
+		// If result and log are printed to the same target,
+		//		add result label,
+		//		and the result will be added to tail;
+		// else print clean result.
+		if (args->verbose() || ! args->allfile().empty())
+			glog->print("_|%\n======== std::cout ========\n"s + out->out().str());
+		else
+			gout->print(out->out().str());
 	}
-
-	if (! args->outfile().empty())
+	catch (...)
 	{
-		std::ofstream file{args->outfile(), std::ios::trunc};
-		file << out->out().str() << std::flush;
-		cout_to_file = true;
-	}
-
-	if (! args->logfile().empty())
-	{
-		std::ofstream file{args->logfile(), std::ios::trunc};
-		file << out->log().str() <<std::endl;
-		clog_to_file = true;
-	}
-
-	if (! args->errfile().empty())
-	{
-		std::ofstream file{args->errfile(), std::ios::trunc};
-		file << out->err().str() << std::endl;
-		cerr_to_file = true;
-	}
-
-	if (cout_to_file && cerr_to_file && clog_to_file)
-	{
-		return 1;	// no std::out console output, return non-zero.
-	}
-
-	// Exception Propagate
-	if (! cerr_to_file && ! out->err().str().empty())
-	{
-		std::cerr << "_|\n"
-			<< out->err().str() << std::flush;
+		BOOST_ASSERT_MSG(false, "This should not happen. Please submit to developers.");
 		return 1;
-	}
-
-	// Verbose mode, no matter ever.
-	if (args->verbose() && ! out->log().str().empty())
-	{
-		std::clog << "_$|\n"
-			<< "|||\n|||\n|||\n"
-			<< out->log().str() << std::flush;
-	}
-
-	if (! cout_to_file || (args->allfile().empty() && args->outfile().empty()))
-	{
-		std::cout << out->out().str() << std::flush;
-		return 0;
 	}
 }
 
