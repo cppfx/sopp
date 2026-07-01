@@ -1,0 +1,6 @@
+name = sopp ; # project name
+
+echo "Build $(name) ..." ;
+
+build-project sopp ;
+

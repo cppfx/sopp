@@ -1,0 +1,16 @@
+name = sopp/sopp ;
+echo "Build $(name) ..." ;
+
+project
+	sopp/sopp
+:
+	default-build
+		<cxxstd>26
+;
+
+exe
+	sopp
+:
+	main.cpp
+;
+
