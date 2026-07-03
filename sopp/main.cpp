@@ -13,6 +13,7 @@
 #include <boost/assert.hpp>
 #include <fstream>
 #include <mutex>
+#include <iomanip>
 
 using std::string_literals::operator""s;
 
