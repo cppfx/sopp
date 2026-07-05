@@ -1,9 +1,19 @@
 //
-// Copyright (c) 2025 cppfx.xyz
+// Copyright (c) 2026 cppfx.xyz
 //
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
+
+// todo list:
+//	content type is download, stream
+//	exact json content type
+//	request data not required
+//	botan tls
+//	protocol type ipv6 explicit
+//	general one exception class
+//	sopp::stoi
+//	unit test
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
@@ -14,6 +24,7 @@
 #include <fstream>
 #include <mutex>
 #include <iomanip>
+#include "string.hpp"
 
 using std::string_literals::operator""s;
 
@@ -123,7 +134,7 @@ namespace sopp
 		args(int argc, char ** argv)
 		{
 			for (int i=0; i<argc; ++i)
-				__args.emplace_back(argv[i]);
+				__args.emplace_back(sopp::string{argv[i]}.strip());
 		}
 		virtual ~args() = default;
 	public:
@@ -173,7 +184,7 @@ namespace sopp
 				<< "-e file        ---- Write error to file.\n"
 				<< "\n"
 				<< "-r host            ---- Request host.\n"
-				<< "-t content-type    ---- default for json-rpc, can be text/html, etc.\n"
+				<< "-t content-type    ---- json, html, download, stream or user-defined any string; default: json.\n"
 				<< "-m method          ---- get, post, head, default: post.\n"
 				<< "\n"
 				<< "-h, -help, --h, --help, help        ---- show this help.\n"
@@ -212,10 +223,11 @@ namespace sopp
 			{
 				this->report("after parsing host:");
 			}
+			this->update_content_type();
 			this->update_some_values();
 			this->parse_transformed_args();
 			this->mutex_test();
-			this->require_host();
+			this->update_host_info();
 			this->report("Final parsed args:");
 		}
 	private:
@@ -476,6 +488,11 @@ namespace sopp
 					"<-r host> is not specified or its value is empty!"
 				};
 
+			if (sopp::string{__host}.contains_blank_if_strip())
+				throw sopp::args_error_show_msg{
+					"Not Allowed: host string specified conains blank character(s)!"
+				};
+
 			auto pos = __host.find_first_of("/");
 			std::string str2;
 			if (pos == std::string::npos)
@@ -521,8 +538,7 @@ namespace sopp
 				}
 				if (__host.starts_with("[") && __host.ends_with("]"))	// process IPv6
 				{
-					__host = __host.substr(1);
-					__host = __host.substr(0, __host.size()-1);
+					__host = __host.substr(1, __host.size()-2);
 				}
 				return;
 			}
@@ -543,9 +559,7 @@ namespace sopp
 					error += "Unwanted args:\n";
 					for (std::uint32_t i=1; i<__transformed_args.size(); ++i)
 					{
-						error += "\t"s +
-							(std::ostringstream{} << (std::quoted(__transformed_args[i]))).str()
-							 + "\n";
+						error += "\t"s + sopp::string{__transformed_args[i]}.quoted() + "\n";
 					}
 				}
 				throw sopp::args_error_show_msg{
@@ -605,12 +619,12 @@ namespace sopp
 			}
 		}
 	private:
-		void require_host()
+		void update_host_info()
 		{
 			std::string error_msg =
 				"Require at least any one of __host and __port is not empty.\n"s
 					+
-				"If host is empty, host will be default 127.0.0.1\n"
+				"If host is empty, host will be default localhost\n"
 					+
 				"If port is empty, port will be default http port 80\n\n";
 
@@ -619,11 +633,37 @@ namespace sopp
 			if (__host.empty() && __port.empty())
 				throw sopp::args_error_show_msg{error_msg};
 			if (__host.empty())
-				__host = "127.0.0.1";
+				__host = "localhost";
 			else if (__port.empty())
-				__port = "80";
+			{
+				if (sopp::string{__host}.is_non_negative_number())
+				{
+					__port = __host;
+					__host = "localhost";
+				}
+				else
+				{
+					__port = "80";
+				}
+			}
 			if (__target.empty())
 				__target = "/";
+		}
+	private:
+		void update_content_type()
+		{
+			if (__content_type.empty() || __content_type == "json")
+			{
+				__content_type = "application/x-www-form-urlencoded";
+				return;
+			}
+			if (__content_type == "html")
+			{
+				__content_type = "text/html";
+				return;
+			}
+			// else
+			return;
 		}
 	private:
 		void remove_vp()
@@ -647,9 +687,6 @@ namespace sopp
 	private:
 		void update_some_values()
 		{
-			if (__content_type.empty())
-				__content_type = "application/x-www-form-urlencoded";
-
 			if (__method.empty())
 			{
 				__method = "POST";
@@ -793,6 +830,7 @@ namespace sopp::net
 			request.method(method);
 			request.set(http::field::host, (std::ostringstream{} << __connected_ep).str());
 			request.set(http::field::user_agent, "c++ sopp json-rpc client");
+			std::cout << "*****content type: " << __args->content_type() << std::endl;
 			request.set(http::field::content_type, __args->content_type());
 			request.body() = __args->json_string();
 			request.prepare_payload();
@@ -1097,6 +1135,9 @@ int main(int argc, char ** argv)
 		return 1;
 	}
 	// [g_stream] ends
+
+	if (args->d_mode())	// __d_mode: do not request server.
+		return 1;
 
 	// [net-request]
 	try
