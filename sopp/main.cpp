@@ -98,12 +98,13 @@ namespace sopp
 		std::vector<std::string> __transformed_args;
 	private:
 		const std::vector<std::string> __key_only_key{"-d", "-dd", "-ddd", "-v"};
-		const std::vector<std::string> __key_value_key{"-a", "-o", "-l", "-e", "-r"};
+		const std::vector<std::string> __key_value_key{"-a", "-o", "-l", "-e", "-r", "-t", "-m"};
 	private:
 		bool __d_mode{false};
 		bool __dd_mode{false};
 		bool __ddd_mode{false};
 		bool __verbose{false};
+
 		std::string __allfile = "";
 		std::string __outfile = "";
 		std::string __logfile = "";
@@ -113,6 +114,9 @@ namespace sopp
 		std::string __port;
 		std::string __target;
 		std::string __json_string;
+
+		std::string __content_type;
+		std::string __method;
 	private:
 		const std::string __vp = "vp";	// value prefix: used for preventing empty duplicated value set.
 	public:
@@ -137,6 +141,9 @@ namespace sopp
 		std::string port() const {return __port;}
 		std::string target() const {return __target;}
 		std::string json_string() const {return __json_string;}
+
+		std::string content_type() const {return __content_type;}
+		std::string method() const {return __method;}
 	public:
 		void print_help() const
 		{
@@ -146,7 +153,11 @@ namespace sopp
 				<< "| Boost Software License\n"
 				<< "|========\n"
 				<< "\n"
-				<< "sopp [-d|-dd|-ddd] [-v] [-a file] [-o file] [-l file] [-e file] <-r host> <json string>\n"
+				<< "sopp [-d|-dd|-ddd] [-v]\n"
+				<< "\t[-a file] [-o file] [-l file] [-e file]\n"
+				<< "\t<-r host> [-t content-type] [-m method]\n"
+				<< "\t<json string>\n"
+				<< "\n"
 				<< "sopp [-h|-help|--h|--help|help]\n"
 				<< "\n"
 				<< "\n"
@@ -160,7 +171,10 @@ namespace sopp
 				<< "-o file        ---- Write result to file.\n"
 				<< "-l file        ---- Write log to file.\n"
 				<< "-e file        ---- Write error to file.\n"
-				<< "-r host        ---- Request host.\n"
+				<< "\n"
+				<< "-r host            ---- Request host.\n"
+				<< "-t content-type    ---- default for json-rpc, can be text/html, etc.\n"
+				<< "-m method          ---- get, post, head, default: post.\n"
 				<< "\n"
 				<< "-h, -help, --h, --help, help        ---- show this help.\n"
 				<< "\n"
@@ -186,18 +200,19 @@ namespace sopp
 			this->parse_args();
 			if (__ddd_mode)
 			{
-				this->report("before removing vp from filenames:");
+				this->report("before removing vp from values:");
 			}
 			this->remove_vp();
 			if (__ddd_mode)
 			{
-				this->report("after removing vp from filenames:");
+				this->report("after removing vp from values:");
 			}
 			this->parse_host();
 			if (__ddd_mode)
 			{
 				this->report("after parsing host:");
 			}
+			this->update_some_values();
 			this->parse_transformed_args();
 			this->mutex_test();
 			this->require_host();
@@ -281,7 +296,7 @@ namespace sopp
 					else
 					{
 						throw sopp::args_error_show_msg{
-							"Code Error, unimplemented key: "s + key
+							"Code Error, unimplemented key (*::key_only): "s + key
 								+ " .\nPlease submit to developers."
 						};
 					}
@@ -342,10 +357,32 @@ namespace sopp
 						else
 							__host = __vp + value;
 					}
+					else if (key == "-t")
+					{
+						if (! __content_type.empty())
+							throw sopp::args_error_show_msg{
+								"Duplicted:\n"s
+									+
+								"\t" + key + " " + value
+							};
+						else
+							__content_type = __vp + value;
+					}
+					else if (key == "-m")
+					{
+						if (! __method.empty())
+							throw sopp::args_error_show_msg{
+								"Duplicted:\n"s
+									+
+								"\t" + key + " " + value
+							};
+						else
+							__method = __vp + value;
+					}
 					else
 					{
 						throw sopp::args_error_show_msg{
-							"Code Error, unimplemented key: "s + key
+							"Code Error, unimplemented key (*::key_value): "s + key
 								+ " .\nPlease submit to developers."
 						};
 					}
@@ -597,12 +634,39 @@ namespace sopp
 					std::ref(__outfile),
 					std::ref(__logfile),
 					std::ref(__errfile),
-					std::ref(__host)
+					std::ref(__host),
+					std::ref(__content_type),
+					std::ref(__method)
 				}
 			)
 			{
 				if (value.starts_with(__vp))
 					value = value.substr(__vp.size());
+			}
+		}
+	private:
+		void update_some_values()
+		{
+			if (__content_type.empty())
+				__content_type = "application/x-www-form-urlencoded";
+
+			if (__method.empty())
+			{
+				__method = "POST";
+			}
+			else
+			{
+				BOOST_ASSERT( int('a' - 'z') == -25 );	// Just test.
+				BOOST_ASSERT( int('A' - 'Z') == -25 );	// Just test.
+				std::string tmp;
+				for (char x: __method)
+				{
+					if (x >= 'a' && x<= 'z')
+						tmp.push_back(static_cast<char>(int{x} + int{'A'} - int{'a'}));
+					else
+						tmp.push_back(x);
+				}
+				__method = tmp;
 			}
 		}
 	private:
@@ -629,6 +693,8 @@ namespace sopp
 				std::clog << "__port: " << std::quoted(__port) << std::endl;
 				std::clog << "__target: " << std::quoted(__target) << std::endl;
 				std::clog << "__json_string: " << std::quoted(__json_string) << std::endl;
+				std::clog << "__content_type: " << std::quoted(__content_type) << std::endl;
+				std::clog << "__method: " << std::quoted(__method) << std::endl;
 			}
 			if (__ddd_mode)
 			{
@@ -715,10 +781,19 @@ namespace sopp::net
 			http::request<http::string_body> request;
 			request.version(11);
 			request.target(__args->target());
-			request.method(http::verb::post);
+			http::verb method = http::string_to_verb(__args->method());
+			if (method == http::verb::unknown)
+			{
+				throw std::runtime_error{
+					"Fatal Error: no such method:\n\t\t"s
+						+
+					__args->method()
+				};
+			}
+			request.method(method);
 			request.set(http::field::host, (std::ostringstream{} << __connected_ep).str());
 			request.set(http::field::user_agent, "c++ sopp json-rpc client");
-			request.set(http::field::content_type, "application/x-www-form-urlencoded");
+			request.set(http::field::content_type, __args->content_type());
 			request.body() = __args->json_string();
 			request.prepare_payload();
 			__tcp_stream->expires_after(std::chrono::seconds(8));
